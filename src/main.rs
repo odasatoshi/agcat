@@ -51,14 +51,27 @@ fn step(state: &mut ListState, len: usize, d: isize) {
     state.select(Some(i.clamp(0, len as isize - 1) as usize));
 }
 
+/// 折り返し後の総行数 lines と表示高 height から、スクロール位置を可視範囲に収める。
+fn clamp_scroll(scroll: u16, lines: u16, height: u16) -> u16 {
+    scroll.min(lines.saturating_sub(height))
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum Pane {
+    Dirs,
+    Files,
+    Preview,
+}
+
 struct App {
     cwd: PathBuf,
     dirs: Vec<(String, PathBuf)>,
     files: Vec<PathBuf>,
     dsel: ListState,
     fsel: ListState,
-    focus_files: bool,
+    pane: Pane,
     body: String,
+    scroll: u16,
 }
 
 impl App {
@@ -69,8 +82,9 @@ impl App {
             files: vec![],
             dsel: ListState::default(),
             fsel: ListState::default(),
-            focus_files: false,
+            pane: Pane::Dirs,
             body: String::new(),
+            scroll: 0,
         };
         app.reload_dirs();
         app
@@ -101,6 +115,7 @@ impl App {
             Some(i) => preview(&self.files[i]),
             None => String::new(),
         };
+        self.scroll = 0;
     }
 }
 
@@ -128,24 +143,31 @@ fn main() -> std::io::Result<()> {
                     Style::new().add_modifier(Modifier::BOLD)
                 }
             };
+            // アクティブなペインは枠を太字にする。
+            let blk = |title: String, on: bool| {
+                Block::bordered()
+                    .title(title)
+                    .border_style(if on { Style::new().add_modifier(Modifier::BOLD) } else { Style::new() })
+            };
 
             let dirs = List::new(app.dirs.iter().map(|(n, _)| n.clone()))
-                .block(Block::bordered().title(app.cwd.to_string_lossy().into_owned()))
-                .highlight_style(hl(!app.focus_files));
+                .block(blk(app.cwd.to_string_lossy().into_owned(), app.pane == Pane::Dirs))
+                .highlight_style(hl(app.pane == Pane::Dirs));
             f.render_stateful_widget(dirs, l, &mut app.dsel);
 
             let files = List::new(app.files.iter().map(|p| name(p)))
-                .block(Block::bordered().title("files"))
-                .highlight_style(hl(app.focus_files));
+                .block(blk("files".into(), app.pane == Pane::Files))
+                .highlight_style(hl(app.pane == Pane::Files));
             f.render_stateful_widget(files, m, &mut app.fsel);
 
             let title = app.fsel.selected().map_or("-".to_string(), |i| name(&app.files[i]));
-            f.render_widget(
-                Paragraph::new(app.body.as_str())
-                    .block(Block::bordered().title(title))
-                    .wrap(Wrap { trim: false }),
-                r,
-            );
+            let body = Paragraph::new(app.body.as_str())
+                .block(blk(title, app.pane == Pane::Preview))
+                .wrap(Wrap { trim: false });
+            // line_count は枠の上下 2 行を含むので、外枠込みの r.height と直接比べられる。
+            let lines = body.line_count(r.width.saturating_sub(2)) as u16;
+            app.scroll = clamp_scroll(app.scroll, lines, r.height);
+            f.render_widget(body.scroll((app.scroll, 0)), r);
         })?;
 
         let Event::Key(k) = event::read()? else { continue };
@@ -154,19 +176,28 @@ fn main() -> std::io::Result<()> {
         }
         match k.code {
             KeyCode::Char('q') | KeyCode::Esc => break,
-            KeyCode::Left | KeyCode::Char('h') => app.focus_files = false,
-            KeyCode::Right | KeyCode::Char('l') => app.focus_files = true,
+            KeyCode::Left | KeyCode::Char('h') => {
+                app.pane = if app.pane == Pane::Preview { Pane::Files } else { Pane::Dirs };
+            }
+            KeyCode::Right | KeyCode::Char('l') => {
+                app.pane = if app.pane == Pane::Dirs { Pane::Files } else { Pane::Preview };
+            }
             KeyCode::Up | KeyCode::Char('k') | KeyCode::Down | KeyCode::Char('j') => {
                 let d = if matches!(k.code, KeyCode::Up | KeyCode::Char('k')) { -1 } else { 1 };
-                if app.focus_files {
-                    step(&mut app.fsel, app.files.len(), d);
-                    app.reload_body();
-                } else {
-                    step(&mut app.dsel, app.dirs.len(), d);
-                    app.reload_files();
+                match app.pane {
+                    // 下端のクランプは折り返し後の行数に依存するので、描画時に行う。
+                    Pane::Preview => app.scroll = app.scroll.saturating_add_signed(d as i16),
+                    Pane::Files => {
+                        step(&mut app.fsel, app.files.len(), d);
+                        app.reload_body();
+                    }
+                    Pane::Dirs => {
+                        step(&mut app.dsel, app.dirs.len(), d);
+                        app.reload_files();
+                    }
                 }
             }
-            KeyCode::Enter if !app.focus_files => {
+            KeyCode::Enter if app.pane == Pane::Dirs => {
                 if let Some(i) = app.dsel.selected() {
                     if let Ok(p) = app.dirs[i].1.canonicalize() {
                         app.cwd = p;
@@ -197,6 +228,29 @@ mod tests {
         assert_eq!(s.selected(), Some(2));
         step(&mut s, 0, 1);
         assert_eq!(s.selected(), None);
+    }
+
+    #[test]
+    fn scroll_clamps_to_last_page() {
+        // 30 行を高さ 10 で見るなら、末尾が最終行に来る 20 が上限。
+        assert_eq!(clamp_scroll(5, 30, 10), 5);
+        assert_eq!(clamp_scroll(20, 30, 10), 20);
+        assert_eq!(clamp_scroll(999, 30, 10), 20);
+        // 全体が収まるなら一切スクロールしない。
+        assert_eq!(clamp_scroll(7, 3, 10), 0);
+    }
+
+    #[test]
+    fn scroll_reaches_end_of_wrapped_body() {
+        // 折り返しを含めた実行数を ratatui に数えさせ、末尾まで到達できることを確かめる。
+        let body = "abcdefghij ".repeat(20);
+        let p = Paragraph::new(body.as_str())
+            .block(Block::bordered())
+            .wrap(Wrap { trim: false });
+        let (w, h) = (22u16, 10u16);
+        let lines = p.line_count(w - 2) as u16;
+        assert!(lines > h, "折り返しで画面より長くなるはず: {lines}");
+        assert_eq!(clamp_scroll(u16::MAX, lines, h), lines - h);
     }
 
     #[test]
