@@ -119,11 +119,80 @@ impl App {
     }
 }
 
-fn main() -> std::io::Result<()> {
-    let cwd = match std::env::args().nth(1) {
-        Some(a) => PathBuf::from(a).canonicalize()?,
-        None => std::env::current_dir()?,
+const USAGE: &str = "\
+Usage: agcat [DIR]
+
+Arguments:
+  DIR    開始ディレクトリ (省略時はカレントディレクトリ)
+
+Options:
+  -h, --help       このヘルプを表示
+  -V, --version    バージョンを表示
+";
+
+/// 引数の解釈結果。Start はディレクトリとして実在を確認済みのパスを持つ。
+enum Cli {
+    Start(PathBuf),
+    Help,
+    Version,
+    Error(String),
+}
+
+/// 実行ファイル名を除いた引数列を解釈する。実在確認とディレクトリ判定まで行う。
+fn cli(args: &[String]) -> Cli {
+    let mut dir: Option<&str> = None;
+    for a in args {
+        match a.as_str() {
+            "-h" | "--help" => return Cli::Help,
+            "-V" | "--version" => return Cli::Version,
+            s if s.starts_with('-') => return Cli::Error(format!("unknown option: {s}")),
+            s if dir.is_some() => return Cli::Error(format!("unexpected argument: {s}")),
+            s => dir = Some(s),
+        }
+    }
+    match dir {
+        None => match std::env::current_dir() {
+            Ok(p) => Cli::Start(p),
+            Err(e) => Cli::Error(format!("current directory: {e}")),
+        },
+        // canonicalize はシンボリックリンクを解決するので、その先が実際に
+        // ディレクトリかどうかを見る。
+        Some(d) => match PathBuf::from(d).canonicalize() {
+            Err(e) => Cli::Error(format!("{d}: {e}")),
+            Ok(p) if !p.is_dir() => Cli::Error(format!("{d}: not a directory")),
+            Ok(p) => Cli::Start(p),
+        },
+    }
+}
+
+fn main() -> std::process::ExitCode {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let cwd = match cli(&args) {
+        Cli::Start(p) => p,
+        Cli::Help => {
+            print!("{USAGE}");
+            return std::process::ExitCode::SUCCESS;
+        }
+        Cli::Version => {
+            println!("agcat {}", env!("CARGO_PKG_VERSION"));
+            return std::process::ExitCode::SUCCESS;
+        }
+        Cli::Error(m) => {
+            eprintln!("agcat: {m}");
+            eprintln!("Try 'agcat --help' for more information.");
+            return std::process::ExitCode::from(2);
+        }
     };
+    match run(cwd) {
+        Ok(()) => std::process::ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("agcat: {e}");
+            std::process::ExitCode::FAILURE
+        }
+    }
+}
+
+fn run(cwd: PathBuf) -> std::io::Result<()> {
     let mut app = App::new(cwd);
     let mut term = ratatui::init();
 
@@ -251,6 +320,54 @@ mod tests {
         let lines = p.line_count(w - 2) as u16;
         assert!(lines > h, "折り返しで画面より長くなるはず: {lines}");
         assert_eq!(clamp_scroll(u16::MAX, lines, h), lines - h);
+    }
+
+    fn args(v: &[&str]) -> Vec<String> {
+        v.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// Cli::Error のメッセージを取り出す。他のバリアントならテストを落とす。
+    fn err(v: &[&str]) -> String {
+        match cli(&args(v)) {
+            Cli::Error(m) => m,
+            _ => panic!("expected an error for {v:?}"),
+        }
+    }
+
+    #[test]
+    fn accepts_a_directory_and_defaults_to_cwd() {
+        let here = Path::new(file!()).parent().unwrap().to_str().unwrap();
+        match cli(&args(&[here])) {
+            Cli::Start(p) => assert!(p.is_dir() && p.is_absolute()),
+            _ => panic!("directory should be accepted"),
+        }
+        match cli(&args(&[])) {
+            Cli::Start(p) => assert_eq!(p, std::env::current_dir().unwrap()),
+            _ => panic!("no argument should fall back to cwd"),
+        }
+    }
+
+    #[test]
+    fn rejects_a_file_and_names_the_bad_path() {
+        // ファイルは実在しても開始ディレクトリにはできない。
+        assert_eq!(err(&[file!()]), format!("{}: not a directory", file!()));
+        // 存在しないパスは、原因と一緒にパス自体をメッセージへ含める。
+        let m = err(&["/nonexistent/path"]);
+        assert!(m.starts_with("/nonexistent/path: "), "path missing: {m}");
+        assert!(m.len() > "/nonexistent/path: ".len(), "reason missing: {m}");
+    }
+
+    #[test]
+    fn handles_options_and_extra_arguments() {
+        assert!(matches!(cli(&args(&["-h"])), Cli::Help));
+        assert!(matches!(cli(&args(&["--help"])), Cli::Help));
+        assert!(matches!(cli(&args(&["-V"])), Cli::Version));
+        assert!(matches!(cli(&args(&["--version"])), Cli::Version));
+        // 未知のオプションはディレクトリ名として扱わない。
+        assert_eq!(err(&["--bogus"]), "unknown option: --bogus");
+        assert_eq!(err(&["src", "extra"]), "unexpected argument: extra");
+        // ヘルプは他の引数より優先し、検証を待たずに返す。
+        assert!(matches!(cli(&args(&["/nonexistent", "--help"])), Cli::Help));
     }
 
     #[test]
