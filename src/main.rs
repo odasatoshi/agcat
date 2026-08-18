@@ -27,7 +27,10 @@ fn entries(dir: &Path, want_dir: bool) -> Vec<PathBuf> {
 }
 
 fn name(p: &Path) -> String {
-    p.file_name().unwrap_or_default().to_string_lossy().into_owned()
+    p.file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .into_owned()
 }
 
 /// 先頭 PREVIEW_LIMIT バイトだけを読む。全体を読むと、大きいファイルにカーソルを
@@ -225,13 +228,18 @@ fn run(cwd: PathBuf) -> std::io::Result<()> {
             };
             // アクティブなペインは枠を太字にする。
             let blk = |title: String, on: bool| {
-                Block::bordered()
-                    .title(title)
-                    .border_style(if on { Style::new().add_modifier(Modifier::BOLD) } else { Style::new() })
+                Block::bordered().title(title).border_style(if on {
+                    Style::new().add_modifier(Modifier::BOLD)
+                } else {
+                    Style::new()
+                })
             };
 
             let dirs = List::new(app.dirs.iter().map(|(n, _)| n.clone()))
-                .block(blk(app.cwd.to_string_lossy().into_owned(), app.pane == Pane::Dirs))
+                .block(blk(
+                    app.cwd.to_string_lossy().into_owned(),
+                    app.pane == Pane::Dirs,
+                ))
                 .highlight_style(hl(app.pane == Pane::Dirs));
             f.render_stateful_widget(dirs, l, &mut app.dsel);
 
@@ -240,7 +248,10 @@ fn run(cwd: PathBuf) -> std::io::Result<()> {
                 .highlight_style(hl(app.pane == Pane::Files));
             f.render_stateful_widget(files, m, &mut app.fsel);
 
-            let title = app.fsel.selected().map_or("-".to_string(), |i| name(&app.files[i]));
+            let title = app
+                .fsel
+                .selected()
+                .map_or("-".to_string(), |i| name(&app.files[i]));
             let body = Paragraph::new(app.body.as_str())
                 .block(blk(title, app.pane == Pane::Preview))
                 .wrap(Wrap { trim: false });
@@ -250,20 +261,34 @@ fn run(cwd: PathBuf) -> std::io::Result<()> {
             f.render_widget(body.scroll((app.scroll, 0)), r);
         })?;
 
-        let Event::Key(k) = event::read()? else { continue };
+        let Event::Key(k) = event::read()? else {
+            continue;
+        };
         if k.kind != KeyEventKind::Press {
             continue;
         }
         match k.code {
             KeyCode::Char('q') | KeyCode::Esc => break,
             KeyCode::Left | KeyCode::Char('h') => {
-                app.pane = if app.pane == Pane::Preview { Pane::Files } else { Pane::Dirs };
+                app.pane = if app.pane == Pane::Preview {
+                    Pane::Files
+                } else {
+                    Pane::Dirs
+                };
             }
             KeyCode::Right | KeyCode::Char('l') => {
-                app.pane = if app.pane == Pane::Dirs { Pane::Files } else { Pane::Preview };
+                app.pane = if app.pane == Pane::Dirs {
+                    Pane::Files
+                } else {
+                    Pane::Preview
+                };
             }
             KeyCode::Up | KeyCode::Char('k') | KeyCode::Down | KeyCode::Char('j') => {
-                let d = if matches!(k.code, KeyCode::Up | KeyCode::Char('k')) { -1 } else { 1 };
+                let d = if matches!(k.code, KeyCode::Up | KeyCode::Char('k')) {
+                    -1
+                } else {
+                    1
+                };
                 match app.pane {
                     // 下端のクランプは折り返し後の行数に依存するので、描画時に行う。
                     Pane::Preview => app.scroll = app.scroll.saturating_add_signed(d as i16),
