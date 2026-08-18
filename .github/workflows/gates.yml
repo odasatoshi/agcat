@@ -1,0 +1,41 @@
+name: gates
+
+# issue との紐付けと、Code Review / Reality Check の実施を merge の前提にする。
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize, labeled, unlabeled]
+
+permissions:
+  pull-requests: write
+
+jobs:
+  gates:
+    runs-on: ubuntu-latest
+    steps:
+      # 新しいコミットが載ったら、前のレビューの結果は当てにならない。ラベルを外して
+      # やり直させる（ラベルが消えることで、下のチェックが落ちる）。
+      - name: レビュー済みラベルを push で無効化する
+        if: github.event.action == 'synchronize'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          for l in reviewed reality-checked; do
+            gh api -X DELETE "repos/$REPO/issues/$PR/labels/$l" >/dev/null 2>&1 || true
+          done
+
+      - name: issue が紐付いているか
+        env:
+          BODY: ${{ github.event.pull_request.body }}
+        run: |
+          grep -qiE '(close[sd]?|fixe?[sd]?|resolve[sd]?) #[0-9]+' <<< "$BODY" \
+            || { echo "PR 本文に Closes #<issue 番号> がない"; exit 1; }
+
+      - name: Code Review と Reality Check のラベルが付いているか
+        env:
+          LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+        run: |
+          for l in reviewed reality-checked; do
+            grep -q "\"$l\"" <<< "$LABELS" || { echo "$l ラベルがない"; exit 1; }
+          done
