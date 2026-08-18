@@ -1,12 +1,22 @@
 name: gates
 
 # issue との紐付けと、Code Review / Reality Check の実施を merge の前提にする。
+#
+# pull_request ではなく pull_request_target を使う。pull_request はワークフローを PR の
+# head 側から読むので、gates.yml 自体を無害化した PR が「自分で緑と言う」ことができてしまう。
+# pull_request_target なら base（main）側の定義で判定される。この job は head のコードを
+# checkout しないので、権限のあるトークンで走っても head のコードは実行されない。
 on:
-  pull_request:
+  pull_request_target:
     types: [opened, edited, reopened, synchronize, labeled, unlabeled]
 
 permissions:
   pull-requests: write
+
+# ラベルを読む run と外す run が重なると、外れた後に緑が報告される瞬間ができる。
+concurrency:
+  group: gates-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
 
 jobs:
   gates:
@@ -21,9 +31,10 @@ jobs:
       - name: issue が紐付いているか
         run: |
           n=$(gh pr view "$PR" --repo "$REPO" --json closingIssuesReferences \
-                --jq '.closingIssuesReferences | length')
+                --jq "[.closingIssuesReferences[]
+                       | select(.repository.owner.login + \"/\" + .repository.name == \"$REPO\")] | length")
           [ "$n" -gt 0 ] || {
-            echo "この PR が閉じる issue がない。本文に Closes #<番号> を書く。"; exit 1; }
+            echo "このリポジトリの issue が紐付いていない。本文に Closes #<番号> を書く。"; exit 1; }
           echo "閉じる issue: $n 件"
 
       # 新しいコミットが載ったら、前のレビューの結果は当てにならない。ラベルを外して

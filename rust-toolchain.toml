@@ -1,0 +1,5 @@
+# runner の Rust が上がるだけで無関係な PR が赤くなり、main への merge が止まるのを避ける。
+# 上げるときは、それ自体を 1 つの変更として PR に載せる。
+[toolchain]
+channel = "1.97"
+components = ["rustfmt", "clippy"]
