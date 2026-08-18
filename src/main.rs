@@ -70,6 +70,15 @@ fn clamp_scroll(scroll: u16, lines: u16, height: u16) -> u16 {
     scroll.min(lines.saturating_sub(height))
 }
 
+/// 折り返し後の総行数を返す。数えるコストは本文の長さに比例するので、幅が変わらない
+/// あいだは前回の値を使う。cache は (幅, 行数) で、本文が変われば呼び出し側が None に戻す。
+fn wrapped_lines(cache: &mut Option<(u16, u16)>, width: u16, count: impl FnOnce() -> u16) -> u16 {
+    match *cache {
+        Some((w, n)) if w == width => n,
+        _ => cache.insert((width, count())).1,
+    }
+}
+
 #[derive(Clone, Copy, PartialEq)]
 enum Pane {
     Dirs,
@@ -86,6 +95,8 @@ struct App {
     pane: Pane,
     body: String,
     scroll: u16,
+    /// (幅, 折り返し後の総行数)。body か幅が変われば無効になる。
+    lines: Option<(u16, u16)>,
 }
 
 impl App {
@@ -99,6 +110,7 @@ impl App {
             pane: Pane::Dirs,
             body: String::new(),
             scroll: 0,
+            lines: None,
         };
         app.reload_dirs();
         app
@@ -130,6 +142,7 @@ impl App {
             None => String::new(),
         };
         self.scroll = 0;
+        self.lines = None;
     }
 }
 
@@ -256,7 +269,8 @@ fn run(cwd: PathBuf) -> std::io::Result<()> {
                 .block(blk(title, app.pane == Pane::Preview))
                 .wrap(Wrap { trim: false });
             // line_count は枠の上下 2 行を含むので、外枠込みの r.height と直接比べられる。
-            let lines = body.line_count(r.width.saturating_sub(2)) as u16;
+            let width = r.width.saturating_sub(2);
+            let lines = wrapped_lines(&mut app.lines, width, || body.line_count(width) as u16);
             app.scroll = clamp_scroll(app.scroll, lines, r.height);
             f.render_widget(body.scroll((app.scroll, 0)), r);
         })?;
@@ -356,6 +370,32 @@ mod tests {
         let lines = p.line_count(w - 2) as u16;
         assert!(lines > h, "折り返しで画面より長くなるはず: {lines}");
         assert_eq!(clamp_scroll(u16::MAX, lines, h), lines - h);
+    }
+
+    #[test]
+    fn counts_wrapped_lines_once_per_width() {
+        let mut cache = None;
+        let calls = std::cell::Cell::new(0);
+        let count = |n: u16| {
+            calls.set(calls.get() + 1);
+            n
+        };
+        assert_eq!(wrapped_lines(&mut cache, 80, || count(42)), 42);
+        // 幅が同じなら数え直さず、前回の値を返す。
+        assert_eq!(wrapped_lines(&mut cache, 80, || count(99)), 42);
+        assert_eq!(calls.get(), 1);
+        // 幅が変われば数え直す。
+        assert_eq!(wrapped_lines(&mut cache, 40, || count(99)), 99);
+        assert_eq!(calls.get(), 2);
+    }
+
+    #[test]
+    fn selecting_a_file_drops_the_line_count_cache() {
+        // 本文が変わったのに前の行数を使い回すと、末尾より先までスクロールできてしまう。
+        let mut app = App::new(Path::new(file!()).parent().unwrap().to_path_buf());
+        app.lines = Some((80, 1234));
+        app.reload_body();
+        assert_eq!(app.lines, None);
     }
 
     fn args(v: &[&str]) -> Vec<String> {
