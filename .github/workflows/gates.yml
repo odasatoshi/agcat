@@ -11,31 +11,38 @@ permissions:
 jobs:
   gates:
     runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      REPO: ${{ github.repository }}
+      PR: ${{ github.event.pull_request.number }}
     steps:
+      # 判定はイベントのペイロードではなく API の現況を読む。ペイロードは run 開始時点で
+      # 固定されるので、同じ run でラベルを外しても古い値が見えてしまう。
+      - name: issue が紐付いているか
+        run: |
+          n=$(gh pr view "$PR" --repo "$REPO" --json closingIssuesReferences \
+                --jq '.closingIssuesReferences | length')
+          [ "$n" -gt 0 ] || {
+            echo "この PR が閉じる issue がない。本文に Closes #<番号> を書く。"; exit 1; }
+          echo "閉じる issue: $n 件"
+
       # 新しいコミットが載ったら、前のレビューの結果は当てにならない。ラベルを外して
-      # やり直させる（ラベルが消えることで、下のチェックが落ちる）。
+      # やり直させる。付いていないラベルを消しにいかないので、削除の失敗は本物の異常として
+      # ジョブを落とす（403 を握り潰すと、誰も気付けないまま担保が消える）。
       - name: レビュー済みラベルを push で無効化する
         if: github.event.action == 'synchronize'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR: ${{ github.event.pull_request.number }}
-          REPO: ${{ github.repository }}
         run: |
+          gh api "repos/$REPO/issues/$PR/labels" --jq '.[].name' > labels.txt
           for l in reviewed reality-checked; do
-            gh api -X DELETE "repos/$REPO/issues/$PR/labels/$l" >/dev/null 2>&1 || true
+            if grep -qxF "$l" labels.txt; then
+              gh api -X DELETE "repos/$REPO/issues/$PR/labels/$l" --silent
+              echo "$l を外した"
+            fi
           done
 
-      - name: issue が紐付いているか
-        env:
-          BODY: ${{ github.event.pull_request.body }}
-        run: |
-          grep -qiE '(close[sd]?|fixe?[sd]?|resolve[sd]?) #[0-9]+' <<< "$BODY" \
-            || { echo "PR 本文に Closes #<issue 番号> がない"; exit 1; }
-
       - name: Code Review と Reality Check のラベルが付いているか
-        env:
-          LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
         run: |
+          gh api "repos/$REPO/issues/$PR/labels" --jq '.[].name' > labels.txt
           for l in reviewed reality-checked; do
-            grep -q "\"$l\"" <<< "$LABELS" || { echo "$l ラベルがない"; exit 1; }
+            grep -qxF "$l" labels.txt || { echo "$l ラベルがない"; exit 1; }
           done

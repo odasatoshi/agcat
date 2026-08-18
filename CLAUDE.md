@@ -20,11 +20,11 @@
 
 ## 仕組みで止まること
 
-- main への直接 push と force push は ruleset が拒否する。bypass はない。
-- `ci` チェック（fmt / clippy / test）と `gates` チェック（issue 紐付け、レビューのラベル）が緑でなければ merge できない。
-- 手元では、main の上での `git commit` / `git push` を `.claude/hooks/guard-main.sh` が止める。
+- main への直接 push、force push、ブランチの削除は ruleset が拒否する。bypass actor は置いていないので、admin でも PR を経由する。
+- `ci` チェック（fmt / clippy / test）と `gates` チェック（issue の紐付け、レビューのラベル）が緑でなければ merge できない。`gates` はイベントのペイロードではなく API の現況を読むので、レビュー後に push すればラベルが外れて赤に戻る。
+- 手元では `.claude/hooks/guard-main.sh` が、main の上での git の書き込み（commit、push、merge、rebase、cherry-pick、revert、am、reset、update-ref）と、ブランチから `main` を対象に push する形、同じコマンドで main に切り替えてから書く形を止める。入力を解釈できないときも止める。
 
-緊急時にフローを外すには、GitHub の Settings > Rules から ruleset を一時的に無効化する。
+bypass actor を置かない代わりに、どうしても外す必要があるときは Settings > Rules で ruleset 自体を一時的に無効化する（無効化は履歴に残る）。
 
 ## コードの決まり
 
