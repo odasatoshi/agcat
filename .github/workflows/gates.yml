@@ -13,10 +13,12 @@ on:
 permissions:
   pull-requests: write
 
-# ラベルを読む run と外す run が重なると、外れた後に緑が報告される瞬間ができる。
+# 直列化する。取り消すと、synchronize の run がラベルを外す前に labeled の run に
+# 潰され、古いレビューのまま緑が報告されうる。直列なら最後に完了した run が最新の
+# 状態を報告するので、重なっても結果は正しい方に落ち着く。
 concurrency:
   group: gates-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   gates:
