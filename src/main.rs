@@ -1,5 +1,6 @@
 use std::{
     fs,
+    io::Read,
     path::{Path, PathBuf},
 };
 
@@ -29,16 +30,26 @@ fn name(p: &Path) -> String {
     p.file_name().unwrap_or_default().to_string_lossy().into_owned()
 }
 
+/// 先頭 PREVIEW_LIMIT バイトだけを読む。全体を読むと、大きいファイルにカーソルを
+/// 合わせた瞬間に止まってしまう。
 fn preview(p: &Path) -> String {
-    match fs::read(p) {
-        Err(e) => format!("<{e}>"),
-        Ok(bytes) => {
-            let head = &bytes[..bytes.len().min(PREVIEW_LIMIT)];
-            if head.contains(&0) {
-                return format!("<binary: {} bytes>", bytes.len());
-            }
-            String::from_utf8_lossy(head).replace('\t', "    ")
+    // 名前付きパイプは書き込み側が現れるまで open が返らないので、開く前に stat で弾く。
+    // デバイスファイルも同じ経路で除ける。
+    let read_head = || -> std::io::Result<(Vec<u8>, u64)> {
+        let md = fs::metadata(p)?;
+        if !md.is_file() {
+            return Err(std::io::Error::other("not a regular file"));
         }
+        let mut buf = Vec::new();
+        fs::File::open(p)?
+            .take(PREVIEW_LIMIT as u64)
+            .read_to_end(&mut buf)?;
+        Ok((buf, md.len()))
+    };
+    match read_head() {
+        Err(e) => format!("<{e}>"),
+        Ok((head, size)) if head.contains(&0) => format!("<binary: {size} bytes>"),
+        Ok((head, _)) => String::from_utf8_lossy(&head).replace('\t', "    "),
     }
 }
 
@@ -375,6 +386,21 @@ mod tests {
         assert!(preview(Path::new(file!())).contains("fn main"));
         let bin = std::env::temp_dir().join("agcat_bin_test");
         fs::write(&bin, [0u8, 1, 2]).unwrap();
-        assert!(preview(&bin).starts_with("<binary"));
+        assert_eq!(preview(&bin), "<binary: 3 bytes>");
+    }
+
+    #[test]
+    fn stops_reading_at_the_preview_limit() {
+        // 上限を超える分は読まない。上限ちょうどで打ち切られていることを長さで見る。
+        let big = std::env::temp_dir().join("agcat_big_test");
+        fs::write(&big, "a".repeat(PREVIEW_LIMIT * 2 + 1)).unwrap();
+        assert_eq!(preview(&big).len(), PREVIEW_LIMIT);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn refuses_files_that_would_never_end() {
+        // /dev/zero は読めば無限に 0 を返す。通常ファイルでないものは読まずに諦める。
+        assert_eq!(preview(Path::new("/dev/zero")), "<not a regular file>");
     }
 }
