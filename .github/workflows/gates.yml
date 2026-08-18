@@ -6,13 +6,7 @@ name: gates
 # head 側から読むので、gates.yml 自体を無害化した PR が「自分で緑と言う」ことができてしまう。
 # pull_request_target なら base（main）側の定義で判定される。この job は head のコードを
 # checkout しないので、権限のあるトークンで走っても head のコードは実行されない。
-#
-# 移行のあいだだけ pull_request も併記する。この定義が main に入るまでは
-# pull_request_target が base 側の定義を見つけられず、gates が一度も走らないため。
-# main に入ったら pull_request を外す（issue で追う）。
 on:
-  pull_request:
-    types: [opened, edited, reopened, synchronize, labeled, unlabeled]
   pull_request_target:
     types: [opened, edited, reopened, synchronize, labeled, unlabeled]
 
