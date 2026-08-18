@@ -1,0 +1,65 @@
+name: gates
+
+# issue との紐付けと、Code Review / Reality Check の実施を merge の前提にする。
+#
+# pull_request ではなく pull_request_target を使う。pull_request はワークフローを PR の
+# head 側から読むので、gates.yml 自体を無害化した PR が「自分で緑と言う」ことができてしまう。
+# pull_request_target なら base（main）側の定義で判定される。この job は head のコードを
+# checkout しないので、権限のあるトークンで走っても head のコードは実行されない。
+#
+# 移行のあいだだけ pull_request も併記する。この定義が main に入るまでは
+# pull_request_target が base 側の定義を見つけられず、gates が一度も走らないため。
+# main に入ったら pull_request を外す（issue で追う）。
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize, labeled, unlabeled]
+  pull_request_target:
+    types: [opened, edited, reopened, synchronize, labeled, unlabeled]
+
+permissions:
+  pull-requests: write
+
+# ラベルを読む run と外す run が重なると、外れた後に緑が報告される瞬間ができる。
+concurrency:
+  group: gates-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  gates:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      REPO: ${{ github.repository }}
+      PR: ${{ github.event.pull_request.number }}
+    steps:
+      # 判定はイベントのペイロードではなく API の現況を読む。ペイロードは run 開始時点で
+      # 固定されるので、同じ run でラベルを外しても古い値が見えてしまう。
+      - name: issue が紐付いているか
+        run: |
+          n=$(gh pr view "$PR" --repo "$REPO" --json closingIssuesReferences \
+                --jq "[.closingIssuesReferences[]
+                       | select(.repository.owner.login + \"/\" + .repository.name == \"$REPO\")] | length")
+          [ "$n" -gt 0 ] || {
+            echo "このリポジトリの issue が紐付いていない。本文に Closes #<番号> を書く。"; exit 1; }
+          echo "閉じる issue: $n 件"
+
+      # 新しいコミットが載ったら、前のレビューの結果は当てにならない。ラベルを外して
+      # やり直させる。付いていないラベルを消しにいかないので、削除の失敗は本物の異常として
+      # ジョブを落とす（403 を握り潰すと、誰も気付けないまま担保が消える）。
+      - name: レビュー済みラベルを push で無効化する
+        if: github.event.action == 'synchronize'
+        run: |
+          gh api "repos/$REPO/issues/$PR/labels" --jq '.[].name' > labels.txt
+          for l in reviewed reality-checked; do
+            if grep -qxF "$l" labels.txt; then
+              gh api -X DELETE "repos/$REPO/issues/$PR/labels/$l" --silent
+              echo "$l を外した"
+            fi
+          done
+
+      - name: Code Review と Reality Check のラベルが付いているか
+        run: |
+          gh api "repos/$REPO/issues/$PR/labels" --jq '.[].name' > labels.txt
+          for l in reviewed reality-checked; do
+            grep -qxF "$l" labels.txt || { echo "$l ラベルがない"; exit 1; }
+          done
