@@ -70,6 +70,12 @@ fn clamp_scroll(scroll: u16, lines: u16, height: u16) -> u16 {
     scroll.min(lines.saturating_sub(height))
 }
 
+/// 折り返し行数を u16 に収める。そのまま as u16 にすると、ほぼ改行だけで 64 KiB を埋めた
+/// 本文（65536 行）で行数が小さな値に化け、スクロールが 0 に張り付いて動かなくなる。
+fn as_lines(count: usize) -> u16 {
+    count.min(u16::MAX as usize) as u16
+}
+
 /// 折り返し後の総行数を返す。数えるコストは本文の長さに比例するので、幅が変わらない
 /// あいだは前回の値を使う。cache は (幅, 行数) で、本文が変われば呼び出し側が None に戻す。
 fn wrapped_lines(cache: &mut Option<(u16, u16)>, width: u16, count: impl FnOnce() -> u16) -> u16 {
@@ -270,7 +276,7 @@ fn run(cwd: PathBuf) -> std::io::Result<()> {
                 .wrap(Wrap { trim: false });
             // line_count は枠の上下 2 行を含むので、外枠込みの r.height と直接比べられる。
             let width = r.width.saturating_sub(2);
-            let lines = wrapped_lines(&mut app.lines, width, || body.line_count(width) as u16);
+            let lines = wrapped_lines(&mut app.lines, width, || as_lines(body.line_count(width)));
             app.scroll = clamp_scroll(app.scroll, lines, r.height);
             f.render_widget(body.scroll((app.scroll, 0)), r);
         })?;
@@ -370,6 +376,21 @@ mod tests {
         let lines = p.line_count(w - 2) as u16;
         assert!(lines > h, "折り返しで画面より長くなるはず: {lines}");
         assert_eq!(clamp_scroll(u16::MAX, lines, h), lines - h);
+    }
+
+    #[test]
+    fn clamps_the_line_count_to_u16() {
+        // 改行だけで 64 KiB を埋めれば、折り返し行数は 65535 を超える。到達しうる状況である。
+        let body = "\n".repeat(PREVIEW_LIMIT);
+        let p = Paragraph::new(body.as_str())
+            .block(Block::bordered())
+            .wrap(Wrap { trim: false });
+        assert!(p.line_count(64) > u16::MAX as usize);
+        // 切り捨てると行数が化けてスクロールが 0 に張り付くので、上限で止める。
+        assert_eq!(as_lines(65538), u16::MAX);
+        assert!(clamp_scroll(500, as_lines(70000), 40) > 0);
+        // 収まる範囲はそのまま通す。
+        assert_eq!(as_lines(1078), 1078);
     }
 
     #[test]
