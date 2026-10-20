@@ -5,7 +5,7 @@ use std::{
 };
 
 use ratatui::{
-    crossterm::event::{self, Event, KeyCode, KeyEventKind},
+    crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
     layout::{Constraint, Layout},
     style::{Modifier, Style},
     widgets::{Block, List, ListState, Paragraph, Wrap},
@@ -88,12 +88,15 @@ fn wrapped_lines(cache: &mut Option<(u16, u16)>, width: u16, count: impl FnOnce(
 /// 選択位置の次から末尾へ、見つからなければ先頭に戻って、c で始まる名前のファイルを探す。
 /// 同じ文字を続けて押すと、その文字で始まるファイルを順に巡れる。大文字小文字は区別しない。
 fn jump_to(files: &[PathBuf], sel: Option<usize>, c: char) -> Option<usize> {
-    let start = sel.map_or(0, |i| i + 1);
+    let start = sel.map_or(0, |i| i + 1).min(files.len());
     (start..files.len()).chain(0..start).find(|&i| {
-        name(&files[i])
+        files[i]
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
             .chars()
             .next()
-            .is_some_and(|f| f.eq_ignore_ascii_case(&c))
+            .is_some_and(|f| f.to_lowercase().eq(c.to_lowercase()))
     })
 }
 
@@ -338,10 +341,18 @@ fn run(cwd: PathBuf) -> std::io::Result<()> {
                     }
                 }
             }
-            // q は上の腕で先に拾われるので、ここには届かない。
-            KeyCode::Char(c) if app.pane == Pane::Files => {
-                if let Some(i) = jump_to(&app.files, app.fsel.selected(), c) {
-                    app.fsel.select(Some(i));
+            // q は上の腕で先に拾われるので、ここには届かない。Ctrl や Alt を添えた文字は
+            // 端末の操作（Ctrl+C など）なので、頭文字として扱わない。
+            KeyCode::Char(c)
+                if app.pane == Pane::Files
+                    && !k
+                        .modifiers
+                        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+            {
+                let i = jump_to(&app.files, app.fsel.selected(), c);
+                // 一致が今の選択だけなら、読み直してスクロール位置を失わせない。
+                if i.is_some() && i != app.fsel.selected() {
+                    app.fsel.select(i);
                     app.reload_body();
                 }
             }
@@ -454,6 +465,11 @@ mod tests {
         // 何も選択されていなければ先頭から探す。空の一覧でも落ちない。
         assert_eq!(jump_to(&files, None, 'c'), Some(0));
         assert_eq!(jump_to(&[], None, 'c'), None);
+        // 選択位置が範囲外でも落ちない。
+        assert_eq!(jump_to(&files, Some(99), 'c'), Some(0));
+        // ASCII 以外の大文字小文字も区別しない。
+        let files = [PathBuf::from("École.txt")];
+        assert_eq!(jump_to(&files, None, 'é'), Some(0));
     }
 
     fn args(v: &[&str]) -> Vec<String> {
