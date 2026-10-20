@@ -85,19 +85,29 @@ fn wrapped_lines(cache: &mut Option<(u16, u16)>, width: u16, count: impl FnOnce(
     }
 }
 
-/// 選択位置の次から末尾へ、見つからなければ先頭に戻って、c で始まる名前のファイルを探す。
+/// 選択位置の次から末尾へ、見つからなければ先頭に戻って選択位置の手前まで、c で始まる名前の
+/// ファイルを探す。選択位置自身は見ないので、None は「動く先がない」を意味する。
 /// 同じ文字を続けて押すと、その文字で始まるファイルを順に巡れる。大文字小文字は区別しない。
 fn jump_to(files: &[PathBuf], sel: Option<usize>, c: char) -> Option<usize> {
-    let start = sel.map_or(0, |i| i + 1).min(files.len());
-    (start..files.len()).chain(0..start).find(|&i| {
-        files[i]
-            .file_name()
-            .unwrap_or_default()
-            .to_string_lossy()
+    // 選択がなければ（範囲外も同じ扱い）全体を先頭から探す。
+    let (start, upto) = match sel {
+        Some(i) if i < files.len() => (i + 1, i),
+        _ => (0, 0),
+    };
+    (start..files.len()).chain(0..upto).find(|&i| {
+        name(&files[i])
             .chars()
             .next()
             .is_some_and(|f| f.to_lowercase().eq(c.to_lowercase()))
     })
+}
+
+/// Ctrl や Alt を添えた文字は端末の操作（Ctrl+C など）なので、頭文字として扱わない。
+/// ただし Windows の AltGr は CONTROL|ALT の両方が立って届くので、両方揃っていれば文字として通す。
+fn is_plain(m: KeyModifiers) -> bool {
+    let ca = KeyModifiers::CONTROL | KeyModifiers::ALT;
+    let held = m & ca;
+    held.is_empty() || held == ca
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -341,18 +351,10 @@ fn run(cwd: PathBuf) -> std::io::Result<()> {
                     }
                 }
             }
-            // q は上の腕で先に拾われるので、ここには届かない。Ctrl や Alt を添えた文字は
-            // 端末の操作（Ctrl+C など）なので、頭文字として扱わない。
-            KeyCode::Char(c)
-                if app.pane == Pane::Files
-                    && !k
-                        .modifiers
-                        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
-            {
-                let i = jump_to(&app.files, app.fsel.selected(), c);
-                // 一致が今の選択だけなら、読み直してスクロール位置を失わせない。
-                if i.is_some() && i != app.fsel.selected() {
-                    app.fsel.select(i);
+            // q は上の腕で先に拾われるので、ここには届かない。
+            KeyCode::Char(c) if app.pane == Pane::Files && is_plain(k.modifiers) => {
+                if let Some(i) = jump_to(&app.files, app.fsel.selected(), c) {
+                    app.fsel.select(Some(i));
                     app.reload_body();
                 }
             }
@@ -458,8 +460,8 @@ mod tests {
         // 末尾を越えたら先頭に戻る。
         assert_eq!(jump_to(&files, Some(3), 'r'), Some(1));
         assert_eq!(jump_to(&files, Some(3), 'C'), Some(0));
-        // 一致が自分だけなら、その場に留まる。
-        assert_eq!(jump_to(&files, Some(2), 'b'), Some(2));
+        // 一致が自分だけなら動く先がないので None。呼び出し側はプレビューを読み直さない。
+        assert_eq!(jump_to(&files, Some(2), 'b'), None);
         // 一致がなければ動かない。
         assert_eq!(jump_to(&files, Some(0), 'z'), None);
         // 何も選択されていなければ先頭から探す。空の一覧でも落ちない。
@@ -470,6 +472,16 @@ mod tests {
         // ASCII 以外の大文字小文字も区別しない。
         let files = [PathBuf::from("École.txt")];
         assert_eq!(jump_to(&files, None, 'é'), Some(0));
+    }
+
+    #[test]
+    fn ignores_letters_held_with_ctrl_or_alt_but_not_altgr() {
+        assert!(is_plain(KeyModifiers::NONE));
+        assert!(is_plain(KeyModifiers::SHIFT));
+        assert!(!is_plain(KeyModifiers::CONTROL));
+        assert!(!is_plain(KeyModifiers::ALT));
+        // Windows の AltGr は CONTROL|ALT で届く。
+        assert!(is_plain(KeyModifiers::CONTROL | KeyModifiers::ALT));
     }
 
     fn args(v: &[&str]) -> Vec<String> {
