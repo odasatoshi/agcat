@@ -85,6 +85,18 @@ fn wrapped_lines(cache: &mut Option<(u16, u16)>, width: u16, count: impl FnOnce(
     }
 }
 
+/// 選択位置の次から末尾へ、見つからなければ先頭に戻って、c で始まる名前のファイルを探す。
+/// 同じ文字を続けて押すと、その文字で始まるファイルを順に巡れる。大文字小文字は区別しない。
+fn jump_to(files: &[PathBuf], sel: Option<usize>, c: char) -> Option<usize> {
+    let start = sel.map_or(0, |i| i + 1);
+    (start..files.len()).chain(0..start).find(|&i| {
+        name(&files[i])
+            .chars()
+            .next()
+            .is_some_and(|f| f.eq_ignore_ascii_case(&c))
+    })
+}
+
 #[derive(Clone, Copy, PartialEq)]
 enum Pane {
     Dirs,
@@ -330,6 +342,13 @@ fn run(cwd: PathBuf) -> std::io::Result<()> {
                     }
                 }
             }
+            // h/j/k/l/q は上の腕で先に拾われるので、ここには届かない。
+            KeyCode::Char(c) if app.pane == Pane::Files => {
+                if let Some(i) = jump_to(&app.files, app.fsel.selected(), c) {
+                    app.fsel.select(Some(i));
+                    app.reload_body();
+                }
+            }
             _ => {}
         }
     }
@@ -417,6 +436,28 @@ mod tests {
         app.lines = Some((80, 1234));
         app.reload_body();
         assert_eq!(app.lines, None);
+    }
+
+    #[test]
+    fn jumps_to_the_next_file_with_that_initial_and_wraps() {
+        let files: Vec<PathBuf> = ["Cargo.toml", "README.md", "build.rs", "rust-toolchain.toml"]
+            .iter()
+            .map(PathBuf::from)
+            .collect();
+        // 選択位置の次から探す。大文字小文字は区別しない。
+        assert_eq!(jump_to(&files, Some(0), 'r'), Some(1));
+        // 同じ文字をもう一度押すと、次の一致へ進む。
+        assert_eq!(jump_to(&files, Some(1), 'r'), Some(3));
+        // 末尾を越えたら先頭に戻る。
+        assert_eq!(jump_to(&files, Some(3), 'r'), Some(1));
+        assert_eq!(jump_to(&files, Some(3), 'C'), Some(0));
+        // 一致が自分だけなら、その場に留まる。
+        assert_eq!(jump_to(&files, Some(2), 'b'), Some(2));
+        // 一致がなければ動かない。
+        assert_eq!(jump_to(&files, Some(0), 'z'), None);
+        // 何も選択されていなければ先頭から探す。空の一覧でも落ちない。
+        assert_eq!(jump_to(&files, None, 'c'), Some(0));
+        assert_eq!(jump_to(&[], None, 'c'), None);
     }
 
     fn args(v: &[&str]) -> Vec<String> {
