@@ -301,26 +301,22 @@ fn run(cwd: PathBuf) -> std::io::Result<()> {
         }
         match k.code {
             KeyCode::Char('q') | KeyCode::Esc => break,
-            KeyCode::Left | KeyCode::Char('h') => {
+            KeyCode::Left => {
                 app.pane = if app.pane == Pane::Preview {
                     Pane::Files
                 } else {
                     Pane::Dirs
                 };
             }
-            KeyCode::Right | KeyCode::Char('l') => {
+            KeyCode::Right => {
                 app.pane = if app.pane == Pane::Dirs {
                     Pane::Files
                 } else {
                     Pane::Preview
                 };
             }
-            KeyCode::Up | KeyCode::Char('k') | KeyCode::Down | KeyCode::Char('j') => {
-                let d = if matches!(k.code, KeyCode::Up | KeyCode::Char('k')) {
-                    -1
-                } else {
-                    1
-                };
+            KeyCode::Up | KeyCode::Down => {
+                let d = if k.code == KeyCode::Up { -1 } else { 1 };
                 match app.pane {
                     // 下端のクランプは折り返し後の行数に依存するので、描画時に行う。
                     Pane::Preview => app.scroll = app.scroll.saturating_add_signed(d as i16),
@@ -342,7 +338,7 @@ fn run(cwd: PathBuf) -> std::io::Result<()> {
                     }
                 }
             }
-            // h/j/k/l/q は上の腕で先に拾われるので、ここには届かない。
+            // q は上の腕で先に拾われるので、ここには届かない。
             KeyCode::Char(c) if app.pane == Pane::Files => {
                 if let Some(i) = jump_to(&app.files, app.fsel.selected(), c) {
                     app.fsel.select(Some(i));
